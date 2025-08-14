@@ -1,105 +1,163 @@
-
-from flask import Blueprint,request,jsonify
+from flask import Blueprint, request, jsonify
 from datetime import datetime
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask_cors import cross_origin
 from app.decorators import roles_required
-from status_codes import HTTP_400_BAD_REQUEST,HTTP_409_CONFLICT,HTTP_500_INTERNAL_SERVER_ERROR,HTTP_201_CREATED,HTTP_401_UNAUTHORIZED,HTTP_200_OK,HTTP_404_NOT_FOUND,HTTP_403_FORBIDDEN
-import validators
+from app.extensions import db
 from app.models.project_model import Project
-from app.models.client_model import Client
-from app.extensions import db,bcrypt
-from flask_jwt_extended import create_access_token,create_refresh_token,jwt_required,get_jwt_identity
+from app.models.user_model import User
+from status_codes import (
+    HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND, HTTP_403_FORBIDDEN,
+    HTTP_200_OK, HTTP_201_CREATED
+)
 
-# project blueprint
-projects= Blueprint('projects', __name__,url_prefix='/api/v1/projects')
+# Blueprint setup
+projects = Blueprint('projects', __name__, url_prefix='/api/v1/projects')
 
-#creating projects
-@projects.route('/create', methods=['POST'])
+# -------------------- CREATE PROJECT -------------------- #
+@projects.route('/', methods=['POST'])
 @jwt_required()
+@cross_origin()
 def create_project():
-    data = request.get_json()
     try:
+        current_user_id = get_jwt_identity()
+        user = User.query.get(current_user_id)
+
+        if user.user_type not in ["admin", "staff"]:
+            return jsonify({"error": "Access denied"}), HTTP_403_FORBIDDEN
+
+        data = request.get_json()
+        
+        # Validate required fields
+        if not data.get('title') or not data.get('client_id'):
+            return jsonify({"error": "Title and client_id are required"}), HTTP_400_BAD_REQUEST
+
+        # Parse deadline if provided
+        deadline = None
+        if data.get('deadline'):
+            try:
+                deadline = datetime.strptime(data['deadline'], "%Y-%m-%d")
+            except ValueError:
+                return jsonify({"error": "Invalid date format. Use YYYY-MM-DD"}), HTTP_400_BAD_REQUEST
+
         project = Project(
             client_id=data['client_id'],
+            user_id=data.get('user_id', current_user_id),
             title=data['title'],
-            description=data.get('description'),
-            category=data.get('category'),
+            description=data.get('description', ''),
+            category=data.get('category', 'General'),
             status=data.get('status', 'Concept'),
-            deadline=datetime.strptime(data['deadline'], "%Y-%m-%d") if data.get('deadline') else None,
-            price=data.get('price'),
+            deadline=deadline,
+            price=data.get('price', 0),
             payment_status=data.get('payment_status', 'Unpaid'),
             delivery_status=data.get('delivery_status', 'Pending'),
             created_at=datetime.utcnow()
         )
+        
         db.session.add(project)
         db.session.commit()
-        return jsonify({"message": "Project created", "project_id": project.project_id}), HTTP_200_OK
+        return jsonify({
+            "message": "Project created",
+            "project_id": project.project_id,
+            "project": project.to_dict()
+        }), HTTP_201_CREATED
+
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), HTTP_400_BAD_REQUEST
 
-# getting all projects
+# -------------------- GET ALL PROJECTS -------------------- #
 @projects.route('/', methods=['GET'])
 @jwt_required()
+@cross_origin()
 def get_all_projects():
-    projects = Project.query.all()
-    return jsonify([
-        {
-            "id": p.project_id,
-            "title": p.title,
-            "status": p.status,
-            "client_id": p.client_id,
-            "deadline": p.deadline.isoformat() if p.deadline else None
-        } for p in projects
-    ]), HTTP_200_OK
+    try:
+        current_user_id = get_jwt_identity()
+        user = User.query.get(current_user_id)
 
-# getting a specific project by ID
-@projects.route('/<int:id>', methods=['GET'])
+        if user.user_type == "admin":
+            projects = Project.query.all()
+        elif user.user_type == "staff":
+            projects = Project.query.filter_by(user_id=current_user_id).all()
+        else:
+            return jsonify({"error": "Access denied"}), HTTP_403_FORBIDDEN
+
+        return jsonify([p.to_dict() for p in projects]), HTTP_200_OK
+    except Exception as e:
+        return jsonify({"error": str(e)}), HTTP_400_BAD_REQUEST
+
+# -------------------- GET PROJECT BY ID -------------------- #
+@projects.route('/<int:project_id>', methods=['GET'])
 @jwt_required()
-def get_project(id):
-    project = Project.query.get(id)
-    if not project:
-        return jsonify({"error": "Project not found"}), 404
+@cross_origin()
+def get_project(project_id):
+    try:
+        project = Project.query.get_or_404(project_id)
+        current_user_id = get_jwt_identity()
+        user = User.query.get(current_user_id)
 
-    return jsonify({
-        "id": project.project_id,
-        "title": project.title,
-        "description": project.description,
-        "status": project.status,
-        "client_id": project.client_id,
-        "deadline": project.deadline.isoformat() if project.deadline else None,
-        "created_at": project.created_at.isoformat()
-    }), HTTP_200_OK
+        # Check access rights
+        if user.user_type not in ["admin"] and project.user_id != current_user_id:
+            return jsonify({"error": "Access denied"}), HTTP_403_FORBIDDEN
 
-# updating a specific project by ID
-@projects.route('/edit/<int:id>', methods=['PUT'])
+        return jsonify(project.to_dict()), HTTP_200_OK
+    except Exception as e:
+        return jsonify({"error": str(e)}), HTTP_400_BAD_REQUEST
+
+# -------------------- UPDATE PROJECT -------------------- #
+@projects.route('/<int:project_id>', methods=['PUT'])
 @jwt_required()
-def update_project(id):
-    project = Project.query.get(id)
-    if not project:
-        return jsonify({"error": "Project not found"}), 404
+@cross_origin()
+def update_project(project_id):
+    try:
+        current_user_id = get_jwt_identity()
+        user = User.query.get(current_user_id)
+        project = Project.query.get_or_404(project_id)
 
-    data = request.get_json()
+        # Check permissions
+        if user.user_type != "admin" and project.user_id != current_user_id:
+            return jsonify({"error": "Unauthorized access"}), HTTP_403_FORBIDDEN
 
-    project.title = data.get('title', project.title)
-    project.description = data.get('description', project.description)
-    project.status = data.get('status', project.status)
-    if data.get('deadline'):
-        project.deadline = datetime.strptime(data['deadline'], "%Y-%m-%d")
-    project.updated_at = datetime.utcnow()
+        data = request.get_json()
+        
+        # Update fields
+        updatable_fields = [
+            'title', 'description', 'status', 'category',
+            'payment_status', 'delivery_status', 'price'
+        ]
+        
+        for field in updatable_fields:
+            if field in data:
+                setattr(project, field, data[field])
 
-    db.session.commit()
-    return jsonify({"message": "Project updated successfully"}), HTTP_200_OK
+        if 'deadline' in data:
+            try:
+                project.deadline = datetime.strptime(data['deadline'], "%Y-%m-%d")
+            except ValueError:
+                return jsonify({"error": "Invalid date format. Use YYYY-MM-DD"}), HTTP_400_BAD_REQUEST
 
-# deleting a specific project by ID
-@projects.route('/delete/<int:id>', methods=['DELETE'])
+        project.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({
+            "message": "Project updated successfully",
+            "project": project.to_dict()
+        }), HTTP_200_OK
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), HTTP_400_BAD_REQUEST
+
+# -------------------- DELETE PROJECT -------------------- #
+@projects.route('/<int:project_id>', methods=['DELETE'])
 @jwt_required()
 @roles_required('admin')
-def delete_project(id):
-    project = Project.query.get(id)
-    if not project:
-        return jsonify({"error": "Project not found"}), HTTP_404_NOT_FOUND
-
-    db.session.delete(project)
-    db.session.commit()
-    return jsonify({"message": "Project deleted"}), HTTP_200_OK
-
+@cross_origin()
+def delete_project(project_id):
+    try:
+        project = Project.query.get_or_404(project_id)
+        db.session.delete(project)
+        db.session.commit()
+        return jsonify({"message": "Project deleted successfully"}), HTTP_200_OK
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), HTTP_400_BAD_REQUEST

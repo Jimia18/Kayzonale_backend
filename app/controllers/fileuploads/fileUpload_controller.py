@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required
-from decorators import roles_required
+from app.decorators import roles_required
 from app.extensions import db
 from app.models.file_upload_model import FileUpload
 from status_codes import HTTP_201_CREATED, HTTP_404_NOT_FOUND, HTTP_500_INTERNAL_SERVER_ERROR, HTTP_400_BAD_REQUEST

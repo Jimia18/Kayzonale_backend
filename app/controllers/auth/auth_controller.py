@@ -1,81 +1,110 @@
-from flask import Blueprint, request, jsonify,current_app
-from status_codes import HTTP_400_BAD_REQUEST,HTTP_409_CONFLICT,HTTP_500_INTERNAL_SERVER_ERROR,HTTP_201_CREATED,HTTP_401_UNAUTHORIZED,HTTP_200_OK,HTTP_404_NOT_FOUND,HTTP_403_FORBIDDEN
+from flask import Blueprint, request, jsonify, current_app
+from status_codes import (
+    HTTP_400_BAD_REQUEST, HTTP_409_CONFLICT, HTTP_500_INTERNAL_SERVER_ERROR,
+    HTTP_201_CREATED, HTTP_401_UNAUTHORIZED, HTTP_200_OK
+)
 import validators
 from app.models.user_model import User
-from app.extensions import db, bcrypt
-from flask_jwt_extended import create_access_token,create_refresh_token,jwt_required,get_jwt_identity
+from app.models.client_model import Client
+from app.extensions import mail, db, bcrypt, cors
+from flask_mail import Message
+from flask_jwt_extended import (
+    create_access_token, create_refresh_token,
+    jwt_required, get_jwt_identity
+)
+from datetime import datetime
 
+# Define the blueprint only once
 auth = Blueprint("auth", __name__, url_prefix="/api/v1/auth")
 
 # ------------------ REGISTER ------------------ #
 @auth.route("/register", methods=["POST"])
 def register_user():
-    data = request.json
+    data = request.get_json()
+    
+    # Required fields
     first_name = data.get("first_name")
     last_name = data.get("last_name")
-    contact = data.get("contact")
     email = data.get("email")
-    user_type = data.get("user_type", "staff")
+    contact = data.get("contact")
     password = data.get("password")
-    super_key = data.get("super_key")  # for admin
-    biography = data.get("biography", "") if user_type == "staff" else ""
+    user_type = data.get("user_type", "client")  # Default to client
+    
+    # Optional fields
+    company_name = data.get("company_name", "")
+    address = data.get("address", "")
+    super_key = data.get("super_key")  # Only required for admin registration
 
-    if not first_name or not last_name or not contact or not password or not email:
-        return jsonify({"error": "All fields are required"}), HTTP_400_BAD_REQUEST
-
-    if user_type == "staff" and not biography:
-        return jsonify({"error": "Enter your biography"}), HTTP_400_BAD_REQUEST
+    # Validation
+    if not all([first_name, last_name, email, contact, password]):
+        return jsonify({"error": "All required fields must be provided"}), HTTP_400_BAD_REQUEST
 
     if len(password) < 8:
-        return jsonify({"error": "Password is too short"}), HTTP_400_BAD_REQUEST
+        return jsonify({"error": "Password must be at least 8 characters"}), HTTP_400_BAD_REQUEST
 
     if not validators.email(email):
-        return jsonify({"error": "Email is invalid"}), HTTP_400_BAD_REQUEST
+        return jsonify({"error": "Invalid email format"}), HTTP_400_BAD_REQUEST
 
+    # Check for existing user
     if User.query.filter_by(email=email).first():
-        return jsonify({"error": "Email address already in use"}), HTTP_409_CONFLICT
+        return jsonify({"error": "Email already in use"}), HTTP_409_CONFLICT
 
     if User.query.filter_by(contact=contact).first():
-        return jsonify({"error": "Contact already in use"}), HTTP_409_CONFLICT
+        return jsonify({"error": "Phone number already in use"}), HTTP_409_CONFLICT
 
+    # Admin registration validation
     if user_type == "admin":
         if not super_key:
-            return jsonify({"error": "Super key is required to create an admin account"}), HTTP_400_BAD_REQUEST
+            return jsonify({"error": "Super key required for admin registration"}), HTTP_400_BAD_REQUEST
         if super_key != current_app.config.get("SUPER_KEY"):
             return jsonify({"error": "Invalid super key"}), HTTP_401_UNAUTHORIZED
 
     try:
-        # Pass raw password, hashing happens in User model
+        # Hash password before storing
+        hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+        
+        # Create user with hashed password
         new_user = User(
             first_name=first_name,
             last_name=last_name,
-            password=password,
             email=email,
             contact=contact,
-            biography=biography,
+            password=hashed_password,  # Store hashed password
             user_type=user_type
         )
-
         db.session.add(new_user)
         db.session.commit()
 
+        # Create client record if user is client
+        if user_type == "client":
+            new_client = Client(
+                user_id=new_user.user_id,
+                first_name=first_name,
+                last_name=last_name,
+                email=email,
+                contact=contact,
+                company_name=company_name,
+                address=address,
+                created_at=datetime.utcnow()
+            )
+            db.session.add(new_client)
+            db.session.commit()
+
         return jsonify({
-            "message": f"{new_user.get_full_name()} has been registered as a {new_user.user_type}.",
+            "message": f"{new_user.first_name} {new_user.last_name} registered successfully as {user_type}",
             "user": {
                 "id": new_user.user_id,
-                "first_name": new_user.first_name,
-                "last_name": new_user.last_name,
+                "name": f"{new_user.first_name} {new_user.last_name}",
                 "email": new_user.email,
-                "contact": new_user.contact,
-                "type": new_user.user_type,
-                "biography": new_user.biography,
+                "user_type": new_user.user_type,
                 "created_at": new_user.created_at.isoformat()
             }
         }), HTTP_201_CREATED
 
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), HTTP_500_INTERNAL_SERVER_ERROR
+        current_app.logger.error(f"Registration error: {str(e)}")
+        return jsonify({"error": "An error occurred during registration"}), HTTP_500_INTERNAL_SERVER_ERROR
 
 
 # ------------------ LOGIN ------------------ #
@@ -85,32 +114,35 @@ def login():
     password = request.json.get("password")
 
     if not email or not password:
-        return jsonify({"message": "Email and password are required"}), HTTP_400_BAD_REQUEST
+        return jsonify({"error": "Email and password are required"}), HTTP_400_BAD_REQUEST
 
     try:
         user = User.query.filter_by(email=email).first()
 
-        if user and bcrypt.check_password_hash(user.password, password):
-            access_token = create_access_token(identity=str(user.user_id))
-            refresh_token = create_refresh_token(identity=str(user.user_id)) 
+        if not user:
+            return jsonify({"error": "Invalid credentials"}), HTTP_401_UNAUTHORIZED
 
+        if not bcrypt.check_password_hash(user.password, password):
+            return jsonify({"error": "Invalid credentials"}), HTTP_401_UNAUTHORIZED
 
-            return jsonify({
-                "user": {
-                    "id": user.user_id,
-                    "username": user.get_full_name(),
-                    "email": user.email,
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                    "type": user.user_type
-                },
-                "message": "You have successfully logged into your account"
-            }), HTTP_200_OK
-        else:
-            return jsonify({"message": "Invalid email or password"}), HTTP_401_UNAUTHORIZED
+        # Create tokens
+        access_token = create_access_token(identity=str(user.user_id))
+        refresh_token = create_refresh_token(identity=str(user.user_id))
+
+        return jsonify({
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "user": {
+                "id": user.user_id,
+                "name": f"{user.first_name} {user.last_name}",
+                "email": user.email,
+                "user_type": user.user_type
+            }
+        }), HTTP_200_OK
 
     except Exception as e:
-        return jsonify({"error": str(e)}), HTTP_500_INTERNAL_SERVER_ERROR
+        current_app.logger.error(f"Login error: {str(e)}")
+        return jsonify({"error": "An error occurred during login"}), HTTP_500_INTERNAL_SERVER_ERROR
 
 
 # ------------------ TOKEN REFRESH ------------------ #
@@ -120,7 +152,7 @@ def refresh():
     try:
         identity = get_jwt_identity()
         access_token = create_access_token(identity=identity)
-        return jsonify({"access_token": access_token})
+        return jsonify({"access_token": access_token}), HTTP_200_OK
     except Exception as e:
-        print(f"Refresh token error: {str(e)}")
-        return jsonify({"error": str(e)}), HTTP_500_INTERNAL_SERVER_ERROR
+        current_app.logger.error(f"Token refresh error: {str(e)}")
+        return jsonify({"error": "Unable to refresh token"}), HTTP_500_INTERNAL_SERVER_ERROR

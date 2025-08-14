@@ -261,16 +261,16 @@ def get_order_with_payments(order_id):
             "client_id": order.client_id,
             "user_id": order.user_id,
             "status": order.status,
-            "total_amount": order.total_amount,
-            "total_paid": order.total_paid,
+            "total_amount": order.total_amount or 0.0,
             "balance_due": order.balance_due,
+            "total_paid": order.total_paid, 
             "notes": order.notes,
-            "created_at": order.created_at.isoformat() if order.created_at else None,
+            "created_at": order.created_at.isoformat(),
             "payments": payments
-        }), 200
+        }), HTTP_200_OK
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}), HTTP_500_INTERNAL_SERVER_ERROR
 
 
 # ------------------ CLIENT ORDER HISTORY ------------------ #

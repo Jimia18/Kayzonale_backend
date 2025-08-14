@@ -35,7 +35,7 @@ def get_all_users():
                 User.first_name.ilike(f"%{name}%"),
                 User.last_name.ilike(f"%{name}%")
             ))
-
+        # Sorting
         if sort == "desc":
             query = query.order_by(User.created_at.desc())
         else:
@@ -83,7 +83,6 @@ def get_user_by_id(id):
                 'email': user.email,
                 'contact': user.contact,
                 'type': user.user_type,
-                'biography': user.biography,
                 'created_at': user.created_at
             }
         }), HTTP_200_OK
@@ -115,8 +114,6 @@ def update_user(id):
             user.first_name = data['first_name']
         if data.get('last_name'):
             user.last_name = data['last_name']
-        if data.get('biography'):
-            user.biography = data['biography']
         if data.get('user_type') and current_user.user_type == 'admin':
             user.user_type = data['user_type']
 
@@ -147,8 +144,7 @@ def update_user(id):
                 'email': user.email,
                 'contact': user.contact,
                 'type': user.user_type,
-                'biography': user.biography
-            }
+                    }
         }), HTTP_200_OK
 
     except Exception as e:

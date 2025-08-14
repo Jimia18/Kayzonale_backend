@@ -5,6 +5,10 @@ class Client(db.Model):
     __tablename__ = "clients"
 
     client_id = db.Column(db.Integer, primary_key=True)
+    
+    # Foreign key to users table
+    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False)
+
     company_name = db.Column(db.String(150), nullable=True)
     first_name = db.Column(db.String(50), nullable=False)
     last_name = db.Column(db.String(100), nullable=False)
@@ -13,6 +17,9 @@ class Client(db.Model):
     address = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, onupdate=datetime.utcnow)
-    
+
+    # Relationship to user
+    user = db.relationship("User", backref="client", uselist=False)
+
     def get_full_name(self):
         return f"{self.first_name} {self.last_name}"
