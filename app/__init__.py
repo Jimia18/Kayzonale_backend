@@ -19,58 +19,71 @@ mail = Mail()
 def create_app():
     load_dotenv()
 
-    # Paths
-    BASE_DIR = os.path.abspath(os.path.dirname(__file__))  # FIXED HERE
-    STATIC_FOLDER = os.path.join(BASE_DIR, '..', 'static')
-    UPLOAD_FOLDER = os.path.join(STATIC_FOLDER, 'uploads', 'products')
-
     app = Flask(__name__)
     app.config.from_object('config.Config')
-    app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+    
+    # Configure upload folder
+    app.config['UPLOAD_FOLDER'] = os.path.join(app.root_path, 'static', 'uploads', 'products')
+    
+    # Ensure upload directory exists
+    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
     # Serve uploaded product images
     @app.route('/uploads/products/<filename>')
     def uploaded_file(filename):
-        return send_from_directory(os.path.join(app.static_folder, 'uploads/products'), filename)
+        return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
     
+    # CORS Configuration
     CORS(
         app,
         resources={r"/api/*": {"origins": "http://localhost:3000"}},
         supports_credentials=True,
-        allow_headers=['content-Type', 'Authorization']
+        allow_headers=['Content-Type', 'Authorization']
     )
 
+    # JWT Configuration
     app.config["JWT_TOKEN_LOCATION"] = "headers"
-    app.config["JWT_SECRET_KEY"] = "admin"
+    app.config["JWT_SECRET_KEY"] = os.getenv('JWT_SECRET_KEY', 'fallback-secret-key')  # Always use environment variables for secrets
 
-    # Flask mail
-    app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-    app.config['MAIL_PORT'] = 587
-    app.config['MAIL_USE_TLS'] = True
-    app.config['MAIL_USERNAME'] = os.getenv('EMAIL_ADDRESS')
-    app.config['MAIL_PASSWORD'] = os.getenv('EMAIL_PASSWORD')
-    app.config['MAIL_DEFAULT_SENDER'] = 'Kayzonaledesigns@gmail.com'
+    # Flask-Mail Configuration
+    app.config.update(
+        MAIL_SERVER='smtp.gmail.com',
+        MAIL_PORT=587,
+        MAIL_USE_TLS=True,
+        MAIL_USERNAME=os.getenv('EMAIL_ADDRESS'),
+        MAIL_PASSWORD=os.getenv('EMAIL_PASSWORD'),
+        MAIL_DEFAULT_SENDER=os.getenv('MAIL_DEFAULT_SENDER', 'Kayzonaledesigns@gmail.com')
+    )
 
-    # Extensions
+    # Initialize extensions
     db.init_app(app)
     migrate.init_app(app, db)
     bcrypt.init_app(app)
     jwt.init_app(app)
+    mail.init_app(app)
 
-    # Import models
-    from app.models import user_model, service_model, project_model, payment_model, order_model
-    from app.models import file_upload_model, client_model, product_model, orderItem_model
+    # Import models (needed for Flask-Migrate)
+    from app.models import (
+        user_model, service_model, project_model, 
+        payment_model, order_model, file_upload_model,
+        client_model, product_model, orderItem_model
+    )
 
     # Register blueprints
-    app.register_blueprint(auth, url_prefix='/api/v1/auth')
-    app.register_blueprint(users, url_prefix='/api/v1/users')
-    app.register_blueprint(client_bp, url_prefix='/api/v1/clients')
-    app.register_blueprint(projects, url_prefix='/api/v1/projects')
-    app.register_blueprint(order_bp, url_prefix='/api/v1/orders')
-    app.register_blueprint(service_bp, url_prefix='/api/v1/services')
-    app.register_blueprint(payment_bp, url_prefix='/api/v1/payments')
-    app.register_blueprint(file_upload_bp, url_prefix='/api/v1/file_uploads')
-    app.register_blueprint(product_bp, url_prefix='/api/v1/products')
+    blueprints = [
+        (auth, '/api/v1/auth'),
+        (users, '/api/v1/users'),
+        (client_bp, '/api/v1/clients'),
+        (projects, '/api/v1/projects'),
+        (order_bp, '/api/v1/orders'),
+        (service_bp, '/api/v1/services'),
+        (payment_bp, '/api/v1/payments'),
+        (file_upload_bp, '/api/v1/file_uploads'),
+        (product_bp, '/api/v1/products')
+    ]
+    
+    for blueprint, url_prefix in blueprints:
+        app.register_blueprint(blueprint, url_prefix=url_prefix)
 
     @app.route('/')
     def home():

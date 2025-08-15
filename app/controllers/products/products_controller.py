@@ -14,120 +14,155 @@ from status_codes import (
 
 product_bp = Blueprint("product_bp", __name__, url_prefix="/api/v1/products")
 
-UPLOAD_FOLDER = os.path.join(os.getcwd(), "static", "uploads", "products")  # absolute path
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)  # create folder if it doesn't exist
+# Constants
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def get_upload_folder():
+    """Helper function to get the upload folder path"""
+    return os.path.join(current_app.root_path, 'static', 'uploads', 'products')
+
+def save_uploaded_file(file):
+    """Helper function to handle file uploads"""
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+        upload_folder = get_upload_folder()
+        os.makedirs(upload_folder, exist_ok=True)  # Ensure directory exists
+        filepath = os.path.join(upload_folder, filename)
+        file.save(filepath)
+        return f"/static/uploads/products/{filename}"
+    return None
 
 # ------------------ CREATE PRODUCT ------------------ #
-@product_bp.route('/create', methods=['POST'])
+@product_bp.route('/', methods=['POST'])
 @jwt_required()
 @roles_required("admin")
 def create_product():
     try:
-        title = request.form.get('title')
-        description = request.form.get('description')
-        price = request.form.get('price')
-        category = request.form.get('category')
-        image_file = request.files.get('image')
+        data = request.form
+        required_fields = ['title', 'description', 'price', 'category']
+        
+        if not all(field in data for field in required_fields):
+            return jsonify({"error": "Missing required fields"}), HTTP_400_BAD_REQUEST
 
-        if not title or not description or not price or not category:
-            return jsonify({"error": "All fields are required"}), HTTP_400_BAD_REQUEST
-
-        image_url = None
-        if image_file:
-            if not allowed_file(image_file.filename):
-                return jsonify({"error": "Invalid image type"}), HTTP_400_BAD_REQUEST
-            filename = secure_filename(image_file.filename)
-            image_path = os.path.join(UPLOAD_FOLDER, filename)
-            image_file.save(image_path)
-            # Use relative path from static folder for serving
-            image_url = f"/static/uploads/products/{filename}"
+        image_url = save_uploaded_file(request.files.get('image')) if 'image' in request.files else None
 
         new_product = Product(
-            title=title,
-            description=description,
-            price=price,
-            category=category,
+            title=data['title'],
+            description=data['description'],
+            price=float(data['price']),
+            category=data['category'],
             image=image_url
         )
+
         db.session.add(new_product)
         db.session.commit()
-        return jsonify(new_product.to_dict()), HTTP_200_OK
+        
+        return jsonify({
+            "message": "Product created successfully",
+            "product": new_product.to_dict()
+        }), HTTP_200_OK
 
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({"error": "Invalid price value"}), HTTP_400_BAD_REQUEST
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), HTTP_500_INTERNAL_SERVER_ERROR
-
+        current_app.logger.error(f"Error creating product: {str(e)}")
+        return jsonify({"error": "Internal server error"}), HTTP_500_INTERNAL_SERVER_ERROR
 
 # ------------------ GET ALL PRODUCTS ------------------ #
 @product_bp.route('/', methods=['GET'])
 def get_all_products():
-    products = Product.query.all()
-    return jsonify([p.to_dict() for p in products]), HTTP_200_OK
-
+    try:
+        products = Product.query.all()
+        return jsonify([p.to_dict() for p in products]), HTTP_200_OK
+    except Exception as e:
+        current_app.logger.error(f"Error fetching products: {str(e)}")
+        return jsonify({"error": "Internal server error"}), HTTP_500_INTERNAL_SERVER_ERROR
 
 # ------------------ GET PRODUCT BY ID ------------------ #
 @product_bp.route('/<int:product_id>', methods=['GET'])
 def get_product(product_id):
-    product = Product.query.get(product_id)
-    if not product:
+    try:
+        product = Product.query.get_or_404(product_id)
+        return jsonify(product.to_dict()), HTTP_200_OK
+    except Exception as e:
+        current_app.logger.error(f"Error fetching product {product_id}: {str(e)}")
         return jsonify({"error": "Product not found"}), HTTP_404_NOT_FOUND
-    return jsonify(product.to_dict()), HTTP_200_OK
-
 
 # ------------------ UPDATE PRODUCT ------------------ #
-@product_bp.route('/update/<int:product_id>', methods=['PUT', 'PATCH'])
+@product_bp.route('/<int:product_id>', methods=['PUT', 'PATCH'])
 @jwt_required()
 @roles_required("admin")
 def update_product(product_id):
-    product = Product.query.get(product_id)
-    if not product:
-        return jsonify({"error": "Product not found"}), HTTP_404_NOT_FOUND
-
     try:
-        title = request.form.get('title')
-        description = request.form.get('description')
-        price = request.form.get('price')
-        category = request.form.get('category')
-        image_file = request.files.get('image')
+        product = Product.query.get_or_404(product_id)
+        data = request.form
+        
+        if not data:
+            return jsonify({"error": "No data provided"}), HTTP_400_BAD_REQUEST
 
-        if title: product.title = title
-        if description: product.description = description
-        if price: product.price = price
-        if category: product.category = category
-
-        if image_file and allowed_file(image_file.filename):
-            filename = secure_filename(image_file.filename)
-            image_path = os.path.join(UPLOAD_FOLDER, filename)
-            image_file.save(image_path)
-            product.image = f"/{image_path}"
+        # Update fields if provided
+        if 'title' in data: product.title = data['title']
+        if 'description' in data: product.description = data['description']
+        if 'price' in data: product.price = float(data['price'])
+        if 'category' in data: product.category = data['category']
+        
+        # Handle image update
+        if 'image' in request.files:
+            new_image = save_uploaded_file(request.files['image'])
+            if new_image:
+                product.image = new_image
 
         db.session.commit()
-        return jsonify(product.to_dict()), HTTP_200_OK
+        return jsonify({
+            "message": "Product updated successfully",
+            "product": product.to_dict()
+        }), HTTP_200_OK
 
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({"error": "Invalid price value"}), HTTP_400_BAD_REQUEST
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), HTTP_500_INTERNAL_SERVER_ERROR
-
+        current_app.logger.error(f"Error updating product {product_id}: {str(e)}")
+        return jsonify({"error": "Internal server error"}), HTTP_500_INTERNAL_SERVER_ERROR
 
 # ------------------ DELETE PRODUCT ------------------ #
 @product_bp.route('/<int:product_id>', methods=['DELETE'])
 @jwt_required()
 @roles_required("admin")
 def delete_product(product_id):
-    product = Product.query.get(product_id)
-    if not product:
-        return jsonify({"error": "Product not found"}), HTTP_404_NOT_FOUND
-
     try:
+        product = Product.query.get_or_404(product_id)
+        
+        # Optional: Delete associated image file
+        if product.image:
+            try:
+                image_path = os.path.join(current_app.root_path, product.image.lstrip('/'))
+                if os.path.exists(image_path):
+                    os.remove(image_path)
+            except Exception as e:
+                current_app.logger.warning(f"Could not delete image file: {str(e)}")
+
         db.session.delete(product)
         db.session.commit()
         return jsonify({"message": "Product deleted successfully"}), HTTP_200_OK
+        
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), HTTP_500_INTERNAL_SERVER_ERROR
-
+        current_app.logger.error(f"Error deleting product {product_id}: {str(e)}")
+        return jsonify({"error": "Internal server error"}), HTTP_500_INTERNAL_SERVER_ERROR
 
 # ------------------ Serve Uploaded Images ------------------ #
-@product_bp.route('/image/<filename>', methods=['GET'])
+@product_bp.route('/images/<filename>', methods=['GET'])
 def get_uploaded_image(filename):
-    return send_from_directory(UPLOAD_FOLDER, filename)
+    try:
+        upload_folder = get_upload_folder()
+        return send_from_directory(upload_folder, filename)
+    except FileNotFoundError:
+        return jsonify({"error": "Image not found"}), HTTP_404_NOT_FOUND
