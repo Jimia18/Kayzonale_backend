@@ -5,6 +5,7 @@ from status_codes import (
 )
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.models.user_model import User
+from app.models.client_model import Client
 from app.extensions import db, bcrypt
 from sqlalchemy import or_
 
@@ -152,6 +153,7 @@ def update_user(id):
 
 
 # ------------------ DELETE USER (ADMIN ONLY) ------------------ #
+
 @users.route('/delete/<int:id>', methods=['DELETE'])
 @jwt_required()
 def delete_user(id):
@@ -166,10 +168,39 @@ def delete_user(id):
         if not user:
             return jsonify({'error': 'User not found'}), HTTP_404_NOT_FOUND
 
+        # Check if the user has any associated clients
+        linked_client = Client.query.filter_by(user_id=id).first()
+        if linked_client:
+            return jsonify({
+                'error': 'Cannot delete user. This user is associated with existing client records.'
+            }), HTTP_400_BAD_REQUEST
+
         db.session.delete(user)
         db.session.commit()
 
         return jsonify({'message': f'{user.get_full_name()} has been deleted successfully'}), HTTP_200_OK
 
+    except Exception as e:
+        return jsonify({'error': str(e)}), HTTP_500_INTERNAL_SERVER_ERROR
+    
+@users.route('/profile', methods=['GET'])
+@jwt_required()
+def get_current_user_profile():
+    try:
+        current_user_id = get_jwt_identity()
+        user = User.query.filter_by(user_id=current_user_id).first()
+        
+        if not user:
+            return jsonify({'error': 'User not found'}), HTTP_404_NOT_FOUND
+            
+        return jsonify({
+            'id': user.user_id,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'email': user.email,
+            'contact': user.contact,
+            'user_type': user.user_type
+        }), HTTP_200_OK
+        
     except Exception as e:
         return jsonify({'error': str(e)}), HTTP_500_INTERNAL_SERVER_ERROR

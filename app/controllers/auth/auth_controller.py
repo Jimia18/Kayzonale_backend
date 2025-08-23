@@ -60,8 +60,10 @@ def register_user():
             return jsonify({"error": "Invalid super key"}), HTTP_401_UNAUTHORIZED
 
     try:
-        # Hash password before storing
-        hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+        # Hash password before storin
+       ## hashed_password = bcrypt.generate_password_hash(password).decode("utf-8")
+        ## hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+        hashed_password = bcrypt.generate_password_hash(data["password"]).decode("utf-8")
         
         # Create user with hashed password
         new_user = User(

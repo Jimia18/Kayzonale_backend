@@ -16,7 +16,7 @@ class User(db.Model):
     biography = db.Column(db.Text, nullable=True)
     
     password = db.Column(db.Text, nullable=False)
-    user_type = db.Column(db.String(20), nullable=False, default="client")  # user, admin, staff
+    user_type = db.Column(db.String(20), nullable=False, default="client")  # user, admin, staff,SuperAdmin
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, onupdate=datetime.utcnow)
