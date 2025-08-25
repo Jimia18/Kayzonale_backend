@@ -38,6 +38,7 @@ def uploaded_file(filename):
 CORS(
     app,
     resources={r"/api/*": {"origins": "http://localhost:3000"}},
+     methods=["POST","PUT","PATCH","DELETE"], 
     supports_credentials=True,
     allow_headers=['Content-Type', 'Authorization']
 )

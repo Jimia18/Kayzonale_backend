@@ -10,17 +10,18 @@ class Product(db.Model):
 
     title = db.Column(db.String(120), nullable=False, unique=True)
     description = db.Column(db.Text, nullable=True)
-    price = db.Column(db.Integer, nullable=False)
     category = db.Column(db.String(50), nullable=True)
+    price = db.Column(db.Integer, nullable=False)
     image = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def to_dict(self):
         return {
             "id": self.id,
             "title": self.title,
             "description": self.description,
-            "price": self.price,
             "category": self.category,
+            "price": self.price,
             "image": self.image
         }
     
