@@ -8,11 +8,9 @@ from app.extensions import db, migrate, bcrypt, jwt,cors
 from app.controllers.auth.auth_controller import auth
 from app.controllers.users.users_controller import users
 from app.controllers.client.client_controller import client_bp
-from app.controllers.Projects.projects_controller import projects
 from app.controllers.orders.order_controller import order_bp
 from app.controllers.services.service_controller import service_bp
 from app.controllers.payments.payments_controller import payment_bp
-from app.controllers.fileuploads.fileUpload_controller import file_upload_bp
 from app.controllers.products.products_controller import product_bp
 
 mail = Mail()
@@ -70,8 +68,7 @@ def create_app():
 
     # ---------------- Models ----------------
     from app.models import (
-        user_model, service_model, project_model, 
-        payment_model, order_model, file_upload_model,
+        user_model, service_model,payment_model, order_model, 
         client_model, product_model, orderItem_model
     )
 
@@ -80,11 +77,9 @@ def create_app():
         (auth, '/api/v1/auth'),
         (users, '/api/v1/users'),
         (client_bp, '/api/v1/clients'),
-        (projects, '/api/v1/projects'),
         (order_bp, '/api/v1/orders'),
         (service_bp, '/api/v1/services'),
         (payment_bp, '/api/v1/payments'),
-        (file_upload_bp, '/api/v1/file_uploads'),
         (product_bp, '/api/v1/products')
     ]
     for blueprint, url_prefix in blueprints:

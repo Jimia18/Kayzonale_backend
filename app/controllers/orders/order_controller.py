@@ -6,7 +6,6 @@ from app.models.order_model import Order
 from app.models.orderItem_model import OrderItem
 from app.models.payment_model import Payment
 from app.models.user_model import User
-from app.models.project_model import Project
 from datetime import datetime, date
 from sqlalchemy import func
 from status_codes import (
@@ -135,11 +134,11 @@ def create_order():
 
         total_amount = 0
 
-        if project_id:
-            project = Project.query.get(project_id)
-            if not project:
-                return jsonify({"error": "Invalid project ID"}), HTTP_404_NOT_FOUND
-            total_amount = project.price if hasattr(project, "price") else 0
+        # if project_id:
+        #     project = Project.query.get(project_id)
+        #     if not project:
+        #         return jsonify({"error": "Invalid project ID"}), HTTP_404_NOT_FOUND
+        #     total_amount = project.price if hasattr(project, "price") else 0
 
         order = Order(
             project_id=project_id,
