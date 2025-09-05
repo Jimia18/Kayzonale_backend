@@ -21,79 +21,64 @@ order_bp = Blueprint("order_bp", __name__, url_prefix="/api/v1/orders")
 
 # ------------------ CLIENT CHECKOUT (CREATE ORDER) ------------------ #
 @order_bp.route("/checkout", methods=["POST"])
-@jwt_required()
-def checkout_order():
+
+def checkout():
     try:
         data = request.get_json()
-        current_user_id = get_jwt_identity()
+        items = data.get('items', [])
+        payment_method = data.get('payment', 'cash')
+        notes = data.get('notes', '')
 
-        items = data.get("items", [])  # [{product_id, quantity, price}, ...]    shhipping", {})
-        payment_method = data.get("payment", "cod")
+        # Determine client
+        client_id = None
+        user_id = None
 
-        if not items:
-            return jsonify({"error": "No items in order"}), HTTP_400_BAD_REQUEST
+        # Try to get logged-in user
+        try:
+            current_user_id = get_jwt_identity()
+            user = User.query.filter_by(user_id=current_user_id).first()
+            if user:
+                client = Client.query.filter_by(user_id=user.user_id).first()
+                if not client:
+                    # Create a client record if missing
+                    client = Client(user_id=user.user_id, name=f"{user.first_name} {user.last_name}")
+                    db.session.add(client)
+                    db.session.commit()
+                client_id = client.client_id
+                user_id = user.user_id
+        except Exception:
+            # Not logged in, create guest client
+            guest_name = data.get('guest_name', 'Guest')
+            guest_contact = data.get('guest_contact', None)
+            client = Client(name=guest_name, contact=guest_contact)
+            db.session.add(client)
+            db.session.commit()
+            client_id = client.client_id
+            user_id = None  # No staff assigned yet
 
-        # calculate total
-        total_amount = sum(item["price"] * item["quantity"] for item in items)
+        # Calculate total amount
+        total_amount = sum(item.get('price', 0) * item.get('quantity', 1) for item in items)
 
-        # Create order
+        # Create the order
         order = Order(
-            user_id=current_user_id,
-            client_id=data.get("client_id"),
-            # notes=shipping.get("notes"),
+            client_id=client_id,
+            user_id=user_id if user_id else 0,  # maybe assign 0 or null if staff not assigned
             total_amount=total_amount,
-            balance_due=total_amount,
-            status="Pending",
-            created_at=datetime.utcnow(),
+            notes=notes,
+            status='Pending',
+            created_at=datetime.utcnow()
         )
         db.session.add(order)
-        db.session.flush()  # make order.order_id available
-
-        # Save order items
-        for item in items:
-            order_item = OrderItem(
-                order_id=order.order_id,
-                product_id=item["product_id"],
-                quantity=item["quantity"],
-                price=item["price"],
-            )
-            db.session.add(order_item)
-
-        # If payment is immediate, create Payment record
-        if payment_method != "cod":
-            payment = Payment(
-                order_id=order.order_id,
-                amount=total_amount,
-                method=payment_method,
-                reference=f"TXN-{datetime.utcnow().timestamp()}"
-            )
-            db.session.add(payment)
-            order.total_paid = total_amount
-            order.balance_due = 0
-            order.status = "Completed"
-
         db.session.commit()
 
-        return jsonify(
-            {
-                "message": "Order placed successfully",
-                "order_id": order.order_id,
-                "total_amount": total_amount,
-                "status": order.status,
-                "items": [
-                    {
-                        "product_id": i["product_id"],
-                        "quantity": i["quantity"],
-                        "price": i["price"],
-                    }
-                    for i in items
-                ],
-            }
-        ), HTTP_200_OK
+        return jsonify({
+            'message': 'Order created successfully',
+            'order_id': order.order_id,
+            'total_amount': total_amount
+        }), HTTP_200_OK
 
     except Exception as e:
-        db.session.rollback()
-        return jsonify({"error": str(e)}), HTTP_500_INTERNAL_SERVER_ERROR
+        return jsonify({'error': str(e)}), HTTP_500_INTERNAL_SERVER_ERROR
 
 @order_bp.route('/my-orders', methods=['GET'])
 @jwt_required()
@@ -128,20 +113,13 @@ def create_order():
         data = request.get_json()
         current_user_id = get_jwt_identity()
 
-        project_id = data.get("project_id")
         client_id = data.get("client_id")
         notes = data.get("notes")
 
         total_amount = 0
 
-        # if project_id:
-        #     project = Project.query.get(project_id)
-        #     if not project:
-        #         return jsonify({"error": "Invalid project ID"}), HTTP_404_NOT_FOUND
-        #     total_amount = project.price if hasattr(project, "price") else 0
-
+      
         order = Order(
-            project_id=project_id,
             client_id=client_id,
             user_id=current_user_id,
             notes=notes,
@@ -170,41 +148,23 @@ def create_order():
 @jwt_required()
 @roles_required('admin')
 def get_orders():
-    current_user_id = get_jwt_identity()
-    current_user = User.query.get(current_user_id)
+    orders = Order.query.all()
+    return jsonify([
+        {
+            "order_id": o.order_id,
+            "client_id": o.client_id,
+            "user_id": o.user_id,
+            "status": o.status,
+            "total_amount": o.total_amount,
+            "notes": o.notes,
+            "created_at": o.created_at.isoformat(),
+            "items": [
+                {"id": i.id, "product_id": i.product_id, "quantity": i.quantity, "price": i.price}
+                for i in o.items
+            ],
+        } for o in orders
+    ]), HTTP_200_OK
 
-    if current_user.user_type == "admin":
-        orders = Order.query.all()
-    else:
-        orders = Order.query.filter_by(user_id=current_user_id).all()
-
-    return (
-        jsonify(
-            [
-                {
-                    "order_id": o.order_id,
-                    "project_id": o.project_id,
-                    "client_id": o.client_id,
-                    "user_id": o.user_id,
-                    "status": o.status,
-                    "total_amount": o.total_amount,
-                    "notes": o.notes,
-                    "created_at": o.created_at.isoformat(),
-                    "items": [
-                        {
-                            "id": i.id,
-                            "product_id": i.product_id,
-                            "quantity": i.quantity,
-                            "price": i.price,
-                        }
-                        for i in o.items
-                    ],
-                }
-                for o in orders
-            ]
-        ),
-        HTTP_200_OK,
-    )
 
 
 # ------------------ GET ORDER BY ID ------------------ #
@@ -225,7 +185,6 @@ def get_order(id):
         jsonify(
             {
                 "order_id": order.order_id,
-                "project_id": order.project_id,
                 "client_id": order.client_id,
                 "user_id": order.user_id,
                 "status": order.status,
@@ -280,7 +239,6 @@ def get_order_with_payments(order_id):
 
         return jsonify({
             "order_id": order.order_id,
-            "project_id": order.project_id,
             "client_id": order.client_id,
             "user_id": order.user_id,
             "status": order.status,
@@ -350,32 +308,30 @@ def delete_order(order_id):
 
 
 # ------------------ FILTER ORDERS ------------------ #
-from datetime import datetime
-
 @order_bp.route("/filter", methods=["GET"])
 @jwt_required()
 def filter_orders():
     current_user_id = get_jwt_identity()
     current_user = User.query.get(current_user_id)
     
-
+    # Get query params
     status = request.args.get("status")
     start_date = request.args.get("start")
     end_date = request.args.get("end")
-
     limit = request.args.get('limit', type=int)
-    if limit:
-        query = query.limit(limit)
 
+    # 1️⃣ Always define query first
     query = Order.query
-    
 
+    # 2️⃣ Apply user filter for staff
     if current_user.user_type == "staff":
         query = query.filter_by(user_id=current_user_id)
 
+    # 3️⃣ Apply status filter
     if status:
         query = query.filter_by(status=status)
 
+    # 4️⃣ Apply date filters
     if start_date:
         try:
             start_dt = datetime.strptime(start_date, "%Y-%m-%d")
@@ -390,12 +346,18 @@ def filter_orders():
         except ValueError:
             return jsonify({"error": "Invalid end date format, expected YYYY-MM-DD"}), HTTP_400_BAD_REQUEST
 
-    orders = query.order_by(Order.created_at.desc()).all()
+    # 5️⃣ Apply ordering
+    query = query.order_by(Order.created_at.desc())
+
+    # 6️⃣ Apply limit if given
+    if limit:
+        query = query.limit(limit)
+
+    orders = query.all()
 
     return jsonify([
         {
             "order_id": o.order_id,
-            "project_id": o.project_id,
             "client_id": o.client_id,
             "user_id": o.user_id,
             "status": o.status,
@@ -404,7 +366,6 @@ def filter_orders():
             "created_at": o.created_at.isoformat()
         } for o in orders
     ]), HTTP_200_OK
-
 
 
 # ------------------ DASHBOARD STATS ------------------ #
@@ -493,3 +454,65 @@ def get_financial_report():
         return jsonify({"report": report, "count": len(report)}), HTTP_200_OK
     except Exception as e:
         return jsonify({"error": str(e)}), HTTP_500_INTERNAL_SERVER_ERROR
+        
+# @order_bp.route("/guest-checkout", methods=["POST"])
+# def guest_checkout():
+#     try:
+#         data = request.get_json()
+#         items = data.get("items", [])
+#         payment_method = data.get("payment", "cod")
+#         client_info = data.get("client_info", {})
+
+#         if not items:
+#             return jsonify({"error": "No items in order"}), HTTP_400_BAD_REQUEST
+
+#         total_amount = sum(item["price"] * item["quantity"] for item in items)
+
+#         # Save client info as a guest
+#         order = Order(
+#             client_id=client_info.get("name"),
+#             phone_number=client_info.get("phone"),
+#             address=client_info.get("address"),
+#             total_amount=total_amount,
+#             balance_due=total_amount,
+#             status="Pending",
+#             created_at=datetime.utcnow()
+#         )
+#         db.session.add(order)
+#         db.session.flush()
+
+#         # Save order items
+#         for item in items:
+#             order_item = OrderItem(
+#                 order_id=order.order_id,
+#                 product_id=item["product_id"],
+#                 quantity=item["quantity"],
+#                 price=item["price"]
+#             )
+#             db.session.add(order_item)
+
+#         # Immediate payment
+#         if payment_method != "cash":
+#             payment = Payment(
+#                 order_id=order.order_id,
+#                 amount=total_amount,
+#                 method=payment_method,
+#                 reference=f"TXN-{datetime.utcnow().timestamp()}"
+#             )
+#             db.session.add(payment)
+#             order.total_paid = total_amount
+#             order.balance_due = 0
+#             order.status = "Completed"
+
+#         db.session.commit()
+
+#         return jsonify({
+#             "message": "Order placed successfully",
+#             "order_id": order.order_id,
+#             "total_amount": total_amount,
+#             "status": order.status
+#         }), HTTP_200_OK
+
+#     except Exception as e:
+#         db.session.rollback()
+#         return jsonify({"error": str(e)}), HTTP_500_INTERNAL_SERVER_ERROR

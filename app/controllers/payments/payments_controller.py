@@ -16,43 +16,49 @@ payment_bp = Blueprint("payment_bp", __name__, url_prefix="/api/v1/payments")
 
 # ------------------ CUSTOMER PAYMENT (Checkout) ------------------ #
 @payment_bp.route("/checkout", methods=["POST"])
-@jwt_required()
 def checkout_payment():
     try:
-        user_id = get_jwt_identity()
-        current_user = User.query.get(user_id)
         data = request.get_json()
+
+        # Check if user is logged in (JWT optional)
+        user_id = None
+        try:
+            from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity
+            verify_jwt_in_request(optional=True)
+            user_id = get_jwt_identity()
+        except:
+            pass  # user is not logged in, treat as guest
 
         order_id = data.get("order_id")
         amount = data.get("amount")
         method = data.get("method")
-        reference = data.get("reference")  # e.g., transaction ID, phone number for mobile money
+        reference = data.get("reference")  # phone number / card / cash ref
 
         if not order_id or not amount or not method:
             return jsonify({"error": "order_id, amount, and method are required"}), HTTP_400_BAD_REQUEST
 
-        # Fetch the order
+        # Fetch order
         order = Order.query.get(order_id)
         if not order:
             return jsonify({"error": "Order not found"}), HTTP_404_NOT_FOUND
 
-        # Verify the order belongs to the current user
-        if order.user_id != user_id:
+        # If user is logged in, verify order ownership
+        if user_id and order.user_id != user_id:
             return jsonify({"error": "Unauthorized access to this order"}), HTTP_403_FORBIDDEN
 
-        # Validate payment amount matches order total
+        # Validate payment amount
         if amount != order.total_amount:
             return jsonify({"error": "Payment amount does not match order total"}), HTTP_400_BAD_REQUEST
 
-        # Restrict payment methods
+        # Validate payment method
         if method not in ["cash", "card", "mobile"]:
             return jsonify({"error": "Invalid payment method"}), HTTP_400_BAD_REQUEST
 
-        # For mobile payments, validate reference (phone number)
+        # Mobile payments: check phone number
         if method == "mobile" and (not reference or len(reference) < 9):
             return jsonify({"error": "Valid phone number required for mobile payments"}), HTTP_400_BAD_REQUEST
 
-        # Create Payment record
+        # Create payment
         payment = Payment(
             order_id=order_id,
             amount=amount,
@@ -61,7 +67,7 @@ def checkout_payment():
         )
         db.session.add(payment)
 
-        # Update order payment status
+        # Update order status
         order.total_paid = amount
         order.balance_due = 0
         order.status = "Completed"
@@ -73,13 +79,13 @@ def checkout_payment():
             "payment_id": payment.payment_id,
             "method": method,
             "amount": amount,
-            "status": order.status
+            "status": order.status,
+            "user": user_id or "guest"
         }), HTTP_201_CREATED
 
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), HTTP_500_INTERNAL_SERVER_ERROR
-
 
 
 # ------------------ CREATE PAYMENT ------------------ #
